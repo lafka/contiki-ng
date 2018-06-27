@@ -266,11 +266,13 @@ rpl_link_callback(const linkaddr_t *addr, int status, int numtx)
     if(instance->used == 1 ) {
       parent = rpl_find_parent_any_dag(instance, &ipaddr);
       if(parent != NULL) {
+#if RPL_WITH_PROBING
         /* If this is the neighbor we were probing urgently, mark urgent
         probing as done */
         if(instance->urgent_probing_target == parent) {
           instance->urgent_probing_target = NULL;
         }
+#endif /* RPL_WITH_PROBING */
         /* Trigger DAG rank recalculation. */
         PRINTF("RPL: rpl_link_callback triggering update\n");
         parent->flags |= RPL_PARENT_FLAG_UPDATED;
