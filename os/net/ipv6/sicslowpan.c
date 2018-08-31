@@ -1527,6 +1527,7 @@ static uint8_t
 output(const linkaddr_t *localdest)
 {
   int frag_needed;
+  uint16_t uipflags;
 
   /* The MAC address of the destination of the packet */
   linkaddr_t dest;
@@ -1538,6 +1539,8 @@ output(const linkaddr_t *localdest)
   /* reset packetbuf buffer */
   packetbuf_clear();
   packetbuf_ptr = packetbuf_dataptr();
+
+  uipflags = uipbuf_get_attr(UIPBUF_ATTR_FLAGS);
 
   if(callback) {
     /* call the attribution when the callback comes, but set attributes
@@ -1561,6 +1564,10 @@ output(const linkaddr_t *localdest)
   /* copy over the retransmission count from uipbuf attributes */
   packetbuf_set_attr(PACKETBUF_ATTR_MAX_MAC_TRANSMISSIONS,
                      uipbuf_get_attr(UIPBUF_ATTR_MAX_MAC_TRANSMISSIONS));
+
+  if (UIPBUF_ATTR_FLAGS_FRAMER_BROADCAST & uipflags) {
+    packetbuf_set_attr(PACKETBUF_ATTR_BROADCAST_PAN, 1);
+  }
 
 /* Calculate NETSTACK_FRAMER's header length, that will be added in the NETSTACK_MAC */
   packetbuf_set_addr(PACKETBUF_ADDR_RECEIVER, &dest);

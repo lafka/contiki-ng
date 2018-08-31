@@ -61,8 +61,10 @@ create_frame(int do_create)
 {
   frame802154_t params;
   int hdr_len;
+  int broadcastpan = packetbuf_attr(PACKETBUF_ATTR_BROADCAST_PAN);
 
-  if(frame802154_get_pan_id() == 0xffff) {
+
+  if(frame802154_get_pan_id() == 0xffff && 1 != broadcastpan) {
     return -1;
   }
 
@@ -91,6 +93,10 @@ create_frame(int do_create)
 
   framer_802154_setup_params(packetbuf_attr, packetbuf_holds_broadcast(),
                              &params);
+
+  params.dest_pid = 1 == broadcastpan
+                    ? FRAME802154_BROADCASTPANDID
+                    : frame802154_get_pan_id();
 
   if(packetbuf_holds_broadcast()) {
     params.dest_addr[0] = 0xFF;
