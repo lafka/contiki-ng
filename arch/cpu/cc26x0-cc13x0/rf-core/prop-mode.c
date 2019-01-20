@@ -1299,12 +1299,6 @@ set_value(radio_param_t param, radio_value_t value)
       return RADIO_RESULT_INVALID_VALUE;
     }
 
-    if(get_channel() == (uint8_t)value) {
-      /* We already have that very same channel configured.
-       * Nothing to do here. */
-      return RADIO_RESULT_OK;
-    }
-
     set_channel((uint8_t)value);
     break;
 
