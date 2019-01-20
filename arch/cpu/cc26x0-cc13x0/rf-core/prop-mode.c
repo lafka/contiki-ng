@@ -244,6 +244,9 @@ volatile static uint8_t *rx_read_entry;
 #define TX_BUF_HDR_LEN       2
 
 static uint8_t tx_buf[TX_BUF_HDR_LEN + TX_BUF_PAYLOAD_LEN] CC_ALIGN(4);
+
+static int channel_clear(void);
+
 /*---------------------------------------------------------------------------*/
 #define PROP_RFCORE_STATE_ACTIVE    0
 #define PROP_RFCORE_STATE_IDLE  1
@@ -705,6 +708,12 @@ transmit(unsigned short transmit_len)
       return RADIO_TX_ERR;
     }
   }
+
+  #if RF_CONF_LISTEN_BEFORE_TALK
+  if (RF_CORE_CCA_BUSY == channel_clear()) {
+    return RADIO_TX_COLLISION;
+  }
+  #endif
 
   /*
    * Prepare the .15.4g PHY header
