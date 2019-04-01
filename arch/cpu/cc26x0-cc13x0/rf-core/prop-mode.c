@@ -245,15 +245,11 @@ volatile static uint8_t *rx_read_entry;
 
 static uint8_t tx_buf[TX_BUF_HDR_LEN + TX_BUF_PAYLOAD_LEN] CC_ALIGN(4);
 /*---------------------------------------------------------------------------*/
-static uint8_t
-rf_is_on(void)
-{
-  if(!rf_core_is_accessible()) {
-    return 0;
-  }
+#define PROP_RFCORE_STATE_ACTIVE    0
+#define PROP_RFCORE_STATE_IDLE  1
+#define PROP_RFCORE_STATE_ERR   3
 
-  return smartrf_settings_cmd_prop_rx_adv.status == RF_CORE_RADIO_OP_STATUS_ACTIVE;
-}
+static uint8_t prop_rf_core_state = PROP_RFCORE_STATE_ERR;
 /*---------------------------------------------------------------------------*/
 static uint8_t
 transmitting(void)
@@ -270,8 +266,8 @@ get_rssi(void)
   uint8_t was_off = 0;
   rfc_CMD_GET_RSSI_t cmd;
 
-  /* If we are off, turn on first */
-  if(!rf_is_on()) {
+  /* Check that radio core is powered on */
+  if(!rf_core_is_accessible()) {
     was_off = 1;
     if(on() != RF_CORE_CMD_OK) {
       PRINTF("get_rssi: on() failed\n");
@@ -445,6 +441,7 @@ rf_cmd_prop_rx()
   if(ret != RF_CORE_CMD_OK) {
     PRINTF("rf_cmd_prop_rx: send_cmd ret=%d, CMDSTA=0x%08lx, status=0x%04x\n",
            ret, cmd_status, cmd_rx_adv->status);
+    prop_rf_core_state = PROP_RFCORE_STATE_ERR;
     return RF_CORE_CMD_ERROR;
   }
 
@@ -455,8 +452,11 @@ rf_cmd_prop_rx()
   if(cmd_rx_adv->status != RF_CORE_RADIO_OP_STATUS_ACTIVE) {
     PRINTF("rf_cmd_prop_rx: CMDSTA=0x%08lx, status=0x%04x\n",
            cmd_status, cmd_rx_adv->status);
+    prop_rf_core_state = PROP_RFCORE_STATE_ERR;
     return RF_CORE_CMD_ERROR;
   }
+
+  prop_rf_core_state = PROP_RFCORE_STATE_ACTIVE;
 
   return ret;
 }
@@ -484,7 +484,13 @@ rx_on_prop(void)
 {
   int ret;
 
-  if(rf_is_on()) {
+  /** Ensure that radio is on as we're not allowed to control power here */
+  if(!rf_core_is_accessible()) {
+    PRINTF("rx_on_prop: radio was off. PD=%u", rf_core_is_accessible());
+    return RF_CORE_CMD_ERROR;
+  }
+
+  if(PROP_RFCORE_STATE_ACTIVE == prop_rf_core_state) {
     PRINTF("rx_on_prop: We were on. PD=%u, RX=0x%04x\n",
            rf_core_is_accessible(), smartrf_settings_cmd_prop_rx_adv.status);
     return RF_CORE_CMD_OK;
@@ -507,7 +513,7 @@ rx_off_prop(void)
   int ret;
 
   /* If we are off, do nothing */
-  if(!rf_is_on()) {
+  if(!rf_core_is_accessible() || PROP_RFCORE_STATE_IDLE == prop_rf_core_state) {
     return RF_CORE_CMD_OK;
   }
 
@@ -520,16 +526,16 @@ rx_off_prop(void)
     /* Continue nonetheless */
   }
 
-  RTIMER_BUSYWAIT_UNTIL(!rf_is_on(), RF_CORE_TURN_OFF_TIMEOUT);
-
   if(smartrf_settings_cmd_prop_rx_adv.status == PROP_DONE_STOPPED ||
      smartrf_settings_cmd_prop_rx_adv.status == PROP_DONE_ABORT) {
     /* Stopped gracefully */
+    prop_rf_core_state = PROP_RFCORE_STATE_IDLE;
     ENERGEST_OFF(ENERGEST_TYPE_LISTEN);
     ret = RF_CORE_CMD_OK;
   } else {
     PRINTF("rx_off_prop: status=0x%04x\n",
            smartrf_settings_cmd_prop_rx_adv.status);
+    prop_rf_core_state = PROP_RFCORE_STATE_ERR;
     ret = RF_CORE_CMD_ERROR;
   }
 
@@ -543,7 +549,7 @@ request(void)
    * We rely on the RDC layer to turn us on and off. Thus, if we are on we
    * will only allow sleep, standby otherwise
    */
-  if(rf_is_on()) {
+  if(rf_core_is_accessible()) {
     return LPM_MODE_SLEEP;
   }
 
@@ -588,11 +594,14 @@ soft_off_prop(void)
   /* Send a CMD_ABORT command to RF Core */
   if(rf_core_send_cmd(CMDR_DIR_CMD(CMD_ABORT), &cmd_status) != RF_CORE_CMD_OK) {
     PRINTF("soft_off_prop: CMD_ABORT status=0x%08lx\n", cmd_status);
+    prop_rf_core_state = PROP_RFCORE_STATE_ERR;
     return;
   }
 
   RTIMER_BUSYWAIT_UNTIL((cmd->status & RF_CORE_RADIO_OP_MASKED_STATUS) !=
                          RF_CORE_RADIO_OP_MASKED_STATUS_RUNNING, RF_CORE_TURN_OFF_TIMEOUT);
+
+  prop_rf_core_state = PROP_RFCORE_STATE_IDLE;
 }
 /*---------------------------------------------------------------------------*/
 static uint8_t
@@ -611,10 +620,14 @@ soft_on_prop(void)
   return rx_on_prop();
 }
 /*---------------------------------------------------------------------------*/
+static uint8_t soft_is_on(void) {
+  return PROP_RFCORE_STATE_ACTIVE == prop_rf_core_state;
+}
+/*---------------------------------------------------------------------------*/
 static const rf_core_primary_mode_t mode_prop = {
   soft_off_prop,
   soft_on_prop,
-  rf_is_on,
+  soft_is_on,
   RAT_TIMESTAMP_OFFSET_SUB_GHZ
 };
 /*---------------------------------------------------------------------------*/
@@ -685,7 +698,7 @@ transmit(unsigned short transmit_len)
     return RADIO_TX_ERR;
   }
 
-  if(!rf_is_on()) {
+  if(!rf_core_is_accessible()) {
     was_off = 1;
     if(on() != RF_CORE_CMD_OK) {
       PRINTF("transmit: on() failed\n");
@@ -941,7 +954,7 @@ channel_clear(void)
 static int
 receiving_packet(void)
 {
-  if(!rf_is_on()) {
+  if(!rf_core_is_accessible()) {
     return 0;
   }
 
@@ -1034,7 +1047,7 @@ on(void)
     return RF_CORE_CMD_OK;
   }
 
-  if(rf_is_on()) {
+  if(rf_core_is_accessible()) {
     PRINTF("on: We were on. PD=%u, RX=0x%04x \n", rf_core_is_accessible(),
            smartrf_settings_cmd_prop_rx_adv.status);
     return RF_CORE_CMD_OK;
@@ -1051,6 +1064,7 @@ on(void)
       PRINTF("on: rf_core_power_up() failed\n");
 
       rf_core_power_down();
+      prop_rf_core_state = PROP_RFCORE_STATE_ERR;
 
       return RF_CORE_CMD_ERROR;
     }
@@ -1083,6 +1097,7 @@ on(void)
       PRINTF("on: rf_core_start_rat() failed\n");
 
       rf_core_power_down();
+      prop_rf_core_state = PROP_RFCORE_STATE_ERR;
 
       return RF_CORE_CMD_ERROR;
     }
@@ -1091,6 +1106,10 @@ on(void)
   rf_core_setup_interrupts();
 
   init_rx_buffers();
+
+  // At this point the RF core is powered up; state is as far as we know unknown
+  // at this point
+  prop_rf_core_state = PROP_RFCORE_STATE_ERR;
 
   /*
    * Trigger a switch to the XOSC, so that we can subsequently use the RF FS
@@ -1101,11 +1120,13 @@ on(void)
 
   if(prop_div_radio_setup() != RF_CORE_CMD_OK) {
     PRINTF("on: prop_div_radio_setup() failed\n");
+    prop_rf_core_state = PROP_RFCORE_STATE_ERR;
     return RF_CORE_CMD_ERROR;
   }
 
   if(prop_fs() != RF_CORE_CMD_OK) {
     PRINTF("on: prop_fs() failed\n");
+    prop_rf_core_state = PROP_RFCORE_STATE_ERR;
     return RF_CORE_CMD_ERROR;
   }
 
@@ -1150,6 +1171,8 @@ off(void)
     }
   }
 
+  prop_rf_core_state = PROP_RFCORE_STATE_ERR;
+
   return RF_CORE_CMD_OK;
 }
 /*---------------------------------------------------------------------------*/
@@ -1174,7 +1197,7 @@ get_value(radio_param_t param, radio_value_t *value)
   switch(param) {
   case RADIO_PARAM_POWER_MODE:
     /* On / off */
-    *value = rf_is_on() ? RADIO_POWER_MODE_ON : RADIO_POWER_MODE_OFF;
+    *value = rf_core_is_accessible() ? RADIO_POWER_MODE_ON : RADIO_POWER_MODE_OFF;
     return RADIO_RESULT_OK;
   case RADIO_PARAM_CHANNEL:
     *value = (radio_value_t)get_channel();
@@ -1245,7 +1268,7 @@ static radio_result_t
 set_value(radio_param_t param, radio_value_t value)
 {
   radio_result_t rv = RADIO_RESULT_OK;
-  uint8_t old_poll_mode;
+  uint8_t old_poll_mode, oldstate;
 
   switch(param) {
   case RADIO_PARAM_POWER_MODE:
@@ -1300,13 +1323,16 @@ set_value(radio_param_t param, radio_value_t value)
       return RADIO_RESULT_INVALID_VALUE;
     }
 
+    oldstate = prop_rf_core_state;
     soft_off_prop();
 
     set_tx_power(value);
 
-    if(soft_on_prop() != RF_CORE_CMD_OK) {
-      PRINTF("set_value: soft_on_prop() failed\n");
-      rv = RADIO_RESULT_ERROR;
+    if(PROP_RFCORE_STATE_ACTIVE == oldstate) {
+      if(soft_on_prop() != RF_CORE_CMD_OK) {
+        PRINTF("set_value: soft_on_prop() failed\n");
+        rv = RADIO_RESULT_ERROR;
+      }
     }
 
     return RADIO_RESULT_OK;
@@ -1319,7 +1345,8 @@ set_value(radio_param_t param, radio_value_t value)
   }
 
   /* If off, the new configuration will be applied the next time radio is started */
-  if(!rf_is_on()) {
+  if(!rf_core_is_accessible()) {
+    PRINTF("set_value: radio was already off....\n");
     return RADIO_RESULT_OK;
   }
 
